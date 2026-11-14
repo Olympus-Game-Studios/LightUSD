@@ -732,6 +732,36 @@ bool LoadAsset(AssetResolutionResolver &resolver,
     layer = std::move(sublayer_composited);
   }
 
+  // Internal references (`references = </Prim>`) name prims of the layer they
+  // are authored in. Resolve them while this asset is still its own layer:
+  // once the target prim is grafted into the referencing layer they would be
+  // looked up there instead and dropped ("not found in this layer"), which
+  // loses e.g. material definitions shared through a `</__src__/Mat>` prim.
+  if (!layer_from_cache && IsUSDFileFormat(asset_path) &&
+      HasReferences(layer)) {
+    const std::string saved_cwp = resolver.current_working_path();
+    const std::vector<std::string> saved_search_paths = resolver.search_paths();
+    layer.set_asset_resolution_state(
+        base_dir.empty() ? resolver.current_working_path() : base_dir,
+        resolver.search_paths());
+    Layer references_composited;
+    ReferencesCompositionOptions refopts;
+    refopts.allow_parent_relative_paths = allow_parent_relative_paths;
+    refopts.error_when_asset_not_found = error_when_asset_not_found;
+    refopts.error_when_unsupported_fileformat = error_when_unsupported_fileformat;
+    refopts.fileformats = fileformats;
+    refopts.max_asset_bytes = max_asset_bytes;
+    const bool composed = CompositeReferences(resolver, layer, &references_composited,
+                                              warn, err, refopts);
+    resolver.set_current_working_path(saved_cwp);
+    resolver.set_search_paths(saved_search_paths);
+    if (!composed) {
+      PUSH_ERROR_AND_RETURN(
+          fmt::format("Failed to composite references of `{}`", asset_path));
+    }
+    layer = std::move(references_composited);
+  }
+
   if (layer_cache && !layer_from_cache) {
     std::lock_guard<std::mutex> cache_lock(LayerCacheMutex());
     if (dst_primspec_root) {
